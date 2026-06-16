@@ -159,7 +159,7 @@ begin
 		
 		while @@FETCH_STATUS = 0
 		begin	
-			declare  cProducto cursor for
+			declare cProducto cursor for
 			select comp_producto --ACA NECESITAMOS UN CURSOR PORQUE PUEDE HABER MAS DE UN COMBO EN UNA FACTURA
 			from Item_Factura 
 			join Composicion C1 on (item_producto = C1.comp_componente)
@@ -570,8 +570,11 @@ go
 	en el ultimo deposito que se desconto.
 */
 
+-- CREO que tenia que suponer que los combos ya tenian su propio stock.
+-- Estoy completamente gaga :(
+
 create trigger EJ16 on Item_factura -- No se pueden usar procedures en el select :(
-after insert
+after insert -- ES UN FOR INSERT
 as
 begin
 	declare @prod char(8)
@@ -631,7 +634,7 @@ begin
 
 		open cStock
 		fetch cStock into @cantidadStock, @deposito
-
+		-- El STOCK negativo corresponde al último STOCK de el que desconte --> TODO: Cambiar lógica.
 		while @@FETCH_STATUS = 0
 		begin
 			if @cant > @cantidadStock
@@ -653,6 +656,7 @@ begin
 			begin
 				update STOCK set stoc_cantidad = @cantidadStock - @cant
 				where stoc_deposito = @deposito and stoc_producto = @prod
+				break -- Si lo puedo cubrir salgo
 			end
 			fetch cStock into @cantidadStock, @deposito
 		end
@@ -675,18 +679,14 @@ go
 -- Entiendo que cuando cargo debe estar por encima del stock de repo y por debajo del maximo, un between
 
 create trigger EJ17 on STOCK
-after insert, update
+for insert, update
 as
-begin
-	update STOCK set stoc_cantidad = s.stoc_punto_reposicion -- Si esta por debajo lo dejo en el de reposición
-	from STOCK s
-	join inserted i on s.stoc_producto = i.stoc_producto and s.stoc_deposito = i.stoc_deposito
-	where i.stoc_cantidad < s.stoc_punto_reposicion
-
-	update STOCK set stoc_cantidad = s.stoc_stock_maximo -- Si esta por encima lo dejo en el máximo
-	from STOCK s
-	join inserted i on s.stoc_producto = i.stoc_producto and s.stoc_deposito = i.stoc_deposito
-	where i.stoc_cantidad > s.stoc_stock_maximo
+begin 
+	IF EXISTS (select 1 from inserted where stoc_cantidad > stoc_stock_maximo or stoc_cantidad < stoc_punto_reposicion)
+	BEGIN
+		RAISERROR('No se encuentra entre los valores válidos', 16, 1)
+		ROLLBACK
+	END
 end
 go
 
@@ -944,11 +944,11 @@ begin
 	while @@FETCH_STATUS = 0
 	begin
 		update DEPOSITO set depo_encargado = (select top 1 empl_codigo from Empleado
-												left join DEPOSITO on depo_encargado = empl_codigo
+												join DEPOSITO on depo_encargado = empl_codigo -- Es un detalle, pero debería ser un encargado
 												join Departamento on depa_codigo = empl_departamento
 												where depa_zona = @depoZona
 												group by empl_codigo
-												order by count(distinct depo_codigo) asc) -- Entiendo que podría ser un count(*)
+												order by count(*) asc) -- Entiendo que podría ser un count(*)
 		where depo_codigo = @depoCod
 
 		fetch cDeposito into @depoCod, @depoZona
@@ -1189,6 +1189,7 @@ go
 
 -- Entiendo que la regla ya se cumplia, sino sería correr un procedure que lo aplique a todos
 
+-- Segun Reinosa como no habla de reglas --> Sotre procedure
 create trigger EJ31 on Empleado
 after insert, update
 as
@@ -1197,8 +1198,9 @@ begin
 	declare @cantAsignar int
 	declare @gerente numeric(6) = (select empl_codigo from Empleado where empl_jefe is null)
 
+	-- El hace un group by empl jefe
 	declare cJefe cursor for -- Jefes con más de 20 empleados
-		select empl_jefe, (dbo.EJ31_CalcularEmpleados(empl_jefe) - 20) from Empleado where dbo.EJ31_CalcularEmpleados(empl_jefe) > 20 and empl_jefe <> @gerente
+		select distinct empl_jefe, (dbo.EJ31_CalcularEmpleados(empl_jefe) - 20) from Empleado where dbo.EJ31_CalcularEmpleados(empl_jefe) > 20 and empl_jefe <> @gerente
 
 	open cJefe
 	fetch cJefe into @jefe, @cantAsignar
@@ -1248,8 +1250,21 @@ create function EJ31_CalcularEmpleados(@empl numeric(6))
 returns int
 as
 begin
-	if exists (select 1 from Empleado where empl_jefe = @empl) -- Tiene empleados
-		return (select count(*) + sum(dbo.EJ31_CalcularEmpleados(empl_codigo)) from Empleado where empl_jefe = @empl)
-	return 0
+	declare @total int = 0
+	declare @empleado numeric(6)
+	declare cEmpleado cursor local fast_forward for
+		select empl_codigo from Empleado where empl_jefe = @empl
+
+	open cEmpleado
+	fetch next from cEmpleado into @empleado
+	while @@fetch_status = 0
+	begin
+		set @total = @total + 1 + dbo.EJ31_CalcularEmpleados(@empleado)
+		fetch next from cEmpleado into @empleado
+	end
+
+	close cEmpleado
+	deallocate cEmpleado
+	return @total
 end
 go

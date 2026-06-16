@@ -9,12 +9,13 @@ select YEAR(fact_fecha) año,
     fami_id cod_fami,
     fami_detalle detalle_fami,
     count(distinct fact_numero+fact_sucursal+fact_tipo) facturas,
-    (select count(distinct item_producto) from Item_Factura 
+    (select count(distinct comp_producto) from Item_Factura 
         join Producto on prod_codigo = item_producto and prod_familia = fami_id
+        join Factura on item_numero = fact_numero and item_sucursal = fact_sucursal and item_tipo = fact_tipo and YEAR(fact_fecha) = YEAR(f1.fact_fecha)
         join Composicion on comp_producto = item_producto) prod_composicion,
     sum(item_cantidad*item_precio) monto
-from Item_Factura
-join Factura on item_numero = fact_numero and item_sucursal = fact_sucursal and item_tipo = fact_tipo
+from Factura f1
+join Item_Factura on item_numero = fact_numero and item_sucursal = fact_sucursal and item_tipo = fact_tipo
 join Producto on prod_codigo = item_producto
 join Familia on prod_familia = fami_id
 where fami_id in (select distinct prod_familia from Producto join Composicion on prod_codigo = comp_producto) -- Si hago un join considero solo las que se vendieron
@@ -25,6 +26,8 @@ where fami_id in (select distinct prod_familia from Producto join Composicion on
                     where p1.prod_familia = fami_id and p1.prod_familia <> p2.prod_familia)
 GROUP BY YEAR(fact_fecha), fami_id, fami_detalle
 go
+
+-- Se puede resolver usando un group by
 
 /*
     Se requiere realizar una verificación de los precios de los COMBOs, para ello se solicita que cree el o los objetos necesarios para realizar una operación que actualice que el precio de un producto compuesto (COMBO) es el 90% de la suma de los precios de sus componentes por las cantidades que los componen. Se debe considerar que un producto compuesto puede estar compuesto por otros productos compuestos.
